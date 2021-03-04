@@ -82,87 +82,6 @@ class BLEConnector(Connector, Thread):
     def get_name(self):
         return self.name
 
-    def on_attributes_update(self, content):
-        log.debug(content)
-        for device in self.__devices_around:
-            if self.__devices_around[device]['device_config'].get('name') == content['device']:
-                for requests in self.__devices_around[device]['device_config']["attributeUpdates"]:
-                    for service in self.__devices_around[device]['services']:
-                        if requests['characteristicUUID'] in self.__devices_around[device]['services'][service]:
-                            characteristic = self.__devices_around[device]['services'][service][requests['characteristicUUID']]['characteristic']
-                            if 'WRITE' in characteristic.propertiesToString():
-                                if content['data'].get(requests['attributeOnThingsBoard']) is not None:
-                                    try:
-                                        self.__check_and_reconnect(device)
-                                        content_to_write = content['data'][requests['attributeOnThingsBoard']].encode('UTF-8')
-                                        characteristic.write(content_to_write, True)
-                                    except BTLEDisconnectError:
-                                        self.__check_and_reconnect(device)
-                                        content_to_write = content['data'][requests['attributeOnThingsBoard']].encode('UTF-8')
-                                        characteristic.write(content_to_write, True)
-                                    except Exception as e:
-                                        log.exception(e)
-                            else:
-                                log.error(
-                                    'Cannot process attribute update request for device: %s with data: %s and config: %s',
-                                    device,
-                                    content,
-                                    self.__devices_around[device]['device_config']["attributeUpdates"])
-
-    def server_side_rpc_handler(self, content):
-        log.debug(content)
-        try:
-            for device in self.__devices_around:
-                if self.__devices_around[device]['device_config'].get('name') == content['device']:
-                    for requests in self.__devices_around[device]['device_config']["serverSideRpc"]:
-                        for service in self.__devices_around[device]['services']:
-                            if requests['characteristicUUID'] in self.__devices_around[device]['services'][service]:
-                                characteristic = self.__devices_around[device]['services'][service][requests['characteristicUUID']]['characteristic']
-                                if requests.get('methodProcessing') and requests['methodProcessing'].upper() in characteristic.propertiesToString():
-                                    if content['data']['method'] == requests['methodRPC']:
-                                        response = None
-                                        if requests['methodProcessing'].upper() == 'WRITE':
-                                            try:
-                                                self.__check_and_reconnect(device)
-                                                response = characteristic.write(content['data'].get('params', '').encode('UTF-8'),
-                                                                                requests.get('withResponse', False))
-                                            except BTLEDisconnectError:
-                                                self.__check_and_reconnect(device)
-                                                response = characteristic.write(content['data'].get('params', '').encode('UTF-8'),
-                                                                                requests.get('withResponse', False))
-                                        elif requests['methodProcessing'].upper() == 'READ':
-                                            try:
-                                                self.__check_and_reconnect(device)
-                                                response = characteristic.read()
-                                            except BTLEDisconnectError:
-                                                self.__check_and_reconnect(device)
-                                                response = characteristic.read()
-                                        elif requests['methodProcessing'].upper() == 'NOTIFY':
-                                            try:
-                                                self.__check_and_reconnect(device)
-                                                delegate = self.__notify_handler(self.__devices_around[device],
-                                                                                 characteristic.handle)
-                                                response = delegate.data
-                                            except BTLEDisconnectError:
-                                                self.__check_and_reconnect(device)
-                                                delegate = self.__notify_handler(self.__devices_around[device],
-                                                                                 characteristic.handle)
-                                                response = delegate.data
-                                        if response is not None:
-                                            log.debug('Response from device: %s', response)
-                                            if requests['withResponse']:
-                                                response = 'success'
-                                            self.__gateway.send_rpc_reply(content['device'], content['data']['id'],
-                                                                          str(response))
-                                else:
-                                    log.error(
-                                        'Method for rpc request - not supported by characteristic or not found in the config.\nDevice: %s with data: %s and config: %s',
-                                        device,
-                                        content,
-                                        self.__devices_around[device]['device_config']["serverSideRpc"])
-        except Exception as e:
-            log.exception(e)
-
     def is_connected(self):
         return self._connected
 
@@ -323,25 +242,6 @@ class BLEConnector(Connector, Thread):
         while self.__devices_around[device]['peripheral']._helper is None:
             log.debug("Connecting to %s...", device)
             self.__devices_around[device]['peripheral'].connect(self.__devices_around[device]['scanned_device'])
-
-    def __notify_handler(self, device, notify_handle, delegate=None):
-        class NotifyDelegate(DefaultDelegate):
-            def __init__(self):
-                DefaultDelegate.__init__(self)
-                self.device = device
-                self.data = {}
-
-            def handleNotification(self, handle, data):
-                self.data = data
-                log.debug('Notification received from device %s handle: %i, data: %s', self.device, handle, data)
-
-        if delegate is None:
-            delegate = NotifyDelegate()
-        device['peripheral'].withDelegate(delegate)
-        device['peripheral'].writeCharacteristic(notify_handle, b'\x01\x00', True)
-        if device['peripheral'].waitForNotifications(1):
-            log.debug("Data received from notification: %s", delegate.data)
-        return delegate
 
     def __service_processing(self, device, characteristic_processing_conf):
         for service in self.__devices_around[device]['services']:
