@@ -27,7 +27,7 @@ from thingsboard_gateway.connectors.ble.bytes_ble_uplink_converter import BytesB
 from thingsboard_gateway.tb_utility.tb_utility import TBUtility
 
 
-class BLEConnector(Connector, Thread):
+class BLEConnectorCustom(Connector, Thread):
     def __init__(self, gateway, config, connector_type):
         super().__init__()
         self.__connector_type = connector_type
@@ -97,14 +97,35 @@ class BLEConnector(Connector, Thread):
     def open(self):
         self.__stopped = False
         self.start()
+        
+    def on_attributes_update(self, content):
+        log.debug("on_attributes_update")
+    
+    def server_side_rpc_handler(self, content):
+        log.debug("server_side_rpc_handler")
 
     def device_add(self, device):
+        log.debug('Device with address: %s - found.', device.addr.upper())
         for interested_device in self.__devices_around:
             if device.addr.upper() == interested_device and self.__devices_around[interested_device].get(
                     'scanned_device') is None:
+                log.debug(f"Device with address: {device.addr.upper()} not yet connected, mark for processing.")
                 self.__devices_around[interested_device]['scanned_device'] = device
                 self.__devices_around[interested_device]['is_new_device'] = True
-            log.debug('Device with address: %s - found.', device.addr.upper())
+            
+
+    def __disconnect_device(self, name):
+        if name not in self.__devices_around:
+            return False
+
+        device = self.__devices_around[interested_device]
+
+        if "peripheral" in device:
+            peripheral = device["peripheral"]
+    
+
+        device["scanned_device"] = None
+        device["is_new_device"] = False
 
     def __read_from_old_devices(self):
         log.debug("Reading from non new devices.")
@@ -232,12 +253,13 @@ class BLEConnector(Connector, Thread):
                 self.__devices_around[device]["scanned_device"] = None
                 peripheral.disconnect()
 
-        except BTLEDisconnectError:
-            log.debug('Connection lost. Device %s', device)
+        except BTLEDisconnectError as e:
+            log.debug(f"Connection lost. Device {device}, Error: {e.message}",)
         except Exception as e:
             log.exception(e)
 
     def __new_device_processing(self, device):
+        log.debug("New device processing.")
         default_services_on_device = [service for service in self.__devices_around[device]['services'].keys() if
                                       int(service.split('-')[0], 16) in self.__default_services]
         log.debug('Default services found on device %s :%s', device, default_services_on_device)
@@ -283,6 +305,8 @@ class BLEConnector(Connector, Thread):
             self.__devices_around[device]['peripheral'].connect(self.__devices_around[device]['scanned_device'])
 
     def __service_processing(self, device, characteristic_processing_conf):
+        device_config = self.__devices_around[device]["device_config"]
+
         for service in self.__devices_around[device]['services']:
             characteristic_uuid_from_config = characteristic_processing_conf.get('characteristicUUID')
             if self.__devices_around[device]['services'][service].get(characteristic_uuid_from_config.upper()) is None:
@@ -291,18 +315,24 @@ class BLEConnector(Connector, Thread):
                 'characteristic']
             self.__check_and_reconnect(device)
             data = None
+
+            # Read Method
             if characteristic_processing_conf.get('method', '_').upper().split()[0] == "READ":
                 if characteristic.supportsRead():
                     self.__check_and_reconnect(device)
                     data = characteristic.read()
                     log.debug(data)
-                    # If specified, write something to the characteristic, device can respond to this
-                    # for example disconnect right away
-                    if characteristic_processing_conf.get("writeOnRead", False):
-                        log.debug("Writing to characteristic as specified in config.")
-                        characteristic.write("E".encode("utf-8"))
                 else:
                     log.error('This characteristic doesn\'t support "READ" method.')
+
+            # Special case of writing on Read
+            # For now we keep this setting in device config, might move to char settings
+            log.debug(device_config)
+            if device_config.get("writeOnRead", False):
+                log.debug("Writing to characteristic as specified in config.")
+                characteristic.write("E".encode("utf-8"))
+
+            # Notify
             if characteristic_processing_conf.get('method', '_').upper().split()[0] == "NOTIFY":
                 self.__check_and_reconnect(device)
                 descriptor = characteristic.getDescriptors(forUUID=0x2902)[0]
